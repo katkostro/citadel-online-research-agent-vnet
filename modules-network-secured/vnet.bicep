@@ -34,10 +34,12 @@ param agentSubnetPrefix string = ''
 
 @description('Address prefix for the private endpoint subnet')
 param peSubnetPrefix string = ''
+
 var defaultVnetAddressPrefix = '192.168.0.0/16'
 var vnetAddress = empty(vnetAddressPrefix) ? defaultVnetAddressPrefix : vnetAddressPrefix
-var agentSubnet = empty(agentSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 0) : agentSubnetPrefix
-var peSubnet = empty(peSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 1) : peSubnetPrefix
+// Create new larger subnet for Container Apps + Registry private endpoint (avoiding existing conflicted subnets)
+var agentSubnet = empty(agentSubnetPrefix) ? cidrSubnet(vnetAddress, 23, 2) : agentSubnetPrefix  // 192.168.4.0/23 (512 IPs) - NEW range to avoid conflicts
+var peSubnet = empty(peSubnetPrefix) ? cidrSubnet(vnetAddress, 24, 0) : peSubnetPrefix          // 192.168.0.0/24 (existing private endpoints)
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName

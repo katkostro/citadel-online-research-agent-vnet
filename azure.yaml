@@ -11,4 +11,11 @@ infra:
 pipeline:
   provider: github
 
-services: {}
+services:
+  api:
+    project: ./src
+    language: python
+    host: containerapp
+    docker:
+      context: ./src
+      remoteBuild: true

@@ -57,11 +57,11 @@ module existingVNet 'existing-vnet.bicep' = if (useExistingVnet) {
 }
 
 // Provide unified outputs regardless of which module was used
-output virtualNetworkName string = useExistingVnet ? existingVNet.outputs.virtualNetworkName : newVNet.outputs.virtualNetworkName
-output virtualNetworkId string = useExistingVnet ? existingVNet.outputs.virtualNetworkId : newVNet.outputs.virtualNetworkId
-output virtualNetworkSubscriptionId string = useExistingVnet ? existingVNet.outputs.virtualNetworkSubscriptionId : newVNet.outputs.virtualNetworkSubscriptionId
-output virtualNetworkResourceGroup string = useExistingVnet ? existingVNet.outputs.virtualNetworkResourceGroup : newVNet.outputs.virtualNetworkResourceGroup
+output virtualNetworkName string = useExistingVnet ? existingVNet!.outputs.virtualNetworkName : newVNet!.outputs.virtualNetworkName
+output virtualNetworkId string = useExistingVnet ? existingVNet!.outputs.virtualNetworkId : newVNet!.outputs.virtualNetworkId
+output virtualNetworkSubscriptionId string = useExistingVnet ? existingVNet!.outputs.virtualNetworkSubscriptionId : newVNet!.outputs.virtualNetworkSubscriptionId
+output virtualNetworkResourceGroup string = useExistingVnet ? existingVNet!.outputs.virtualNetworkResourceGroup : newVNet!.outputs.virtualNetworkResourceGroup
 output agentSubnetName string = agentSubnetName
 output peSubnetName string = peSubnetName
-output agentSubnetId string = useExistingVnet ? existingVNet.outputs.agentSubnetId : newVNet.outputs.agentSubnetId
-output peSubnetId string = useExistingVnet ? existingVNet.outputs.peSubnetId : newVNet.outputs.peSubnetId
+output agentSubnetId string = useExistingVnet ? existingVNet!.outputs.agentSubnetId : newVNet!.outputs.agentSubnetId
+output peSubnetId string = useExistingVnet ? existingVNet!.outputs.peSubnetId : newVNet!.outputs.peSubnetId

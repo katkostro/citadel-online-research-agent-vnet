@@ -38,7 +38,7 @@ param peSubnetPrefix string = ''
 // Get the address space (array of CIDR strings)
 var vnetAddressSpace = existingVNet.properties.addressSpace.addressPrefixes[0]
 
-var agentSubnetSpaces = empty(agentSubnetPrefix) ? cidrSubnet(vnetAddressSpace, 24, 0) : agentSubnetPrefix
+var agentSubnetSpaces = empty(agentSubnetPrefix) ? cidrSubnet(vnetAddressSpace, 23, 0) : agentSubnetPrefix
 var peSubnetSpaces = empty(peSubnetPrefix) ? cidrSubnet(vnetAddressSpace, 24, 1) : peSubnetPrefix
 
 // Reference the existing virtual network
