@@ -1,16 +1,10 @@
 /*
-Existing VNet Subnets Module (legacy filename kept for stability)
-Purpose: Ensure required subnets exist inside an existing Virtual Network.
-Creates (if missing) or reuses:
-  - agent subnet (AI Services network injection / delegated Microsoft.App/environments)
-  - aca subnet   (Container Apps Environment infrastructure subnet)
-  - pe subnet    (Private Endpoints)
+DEPRECATED - DO NOT USE THIS FILE
+===============================
+This file is deprecated and will be removed in a future version.
+Use 'networking/existing-vnet-subnets.bicep' instead.
 
-If subnet address prefixes are omitted, defaults are derived assuming a /16 VNet:
-  agent: /24 (net 0)
-  pe:    /24 (net 1)
-  aca:   /23 (nets 2-3)
-Pass explicit prefixes in production for determinism.
+This file should not be referenced in any templates.
 */
 
 @description('The name of the existing virtual network')

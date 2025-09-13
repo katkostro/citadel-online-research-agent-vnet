@@ -2,22 +2,23 @@ using './main.bicep'
 
 param location = 'eastus2'
 param environmentName = 'dev'
-param aiServices = 'citadelaiv2'
+param aiServices = 'aiservice'
 param modelName = 'gpt-4o'
 param modelFormat = 'OpenAI'
 param modelVersion = '2024-11-20'
 param modelSkuName = 'GlobalStandard'
 param modelCapacity = 30
-param firstProjectName = 'project'
+param firstProjectName = 'citadelproject'
 param projectDescription = 'A project for the AI Foundry account with network secured deployed Agent'
 param displayName = 'project'
-param peSubnetName = 'citadelai-pe-subnet'
+param peSubnetName = 'citadel-pe-snet'
 
 // Resource IDs for existing resources
 // If you provide these, the deployment will use the existing resources instead of creating new ones
 param existingVnetResourceId = ''
-param vnetName = 'citadelai-vnet'
-param agentSubnetName = 'citadelai-apps-subnet'
+param vnetName = 'citadel-vnet'
+param agentSubnetName = 'citadel-agent-snet'
+param acaSubnetName = 'citadel-aca-snet'
 param aiSearchResourceId = ''
 param azureStorageAccountResourceId = ''
 param azureCosmosDBAccountResourceId = ''
@@ -53,7 +54,8 @@ param dnsZoneNames = [
 // Network configuration: only used when existingVnetResourceId is not provided
 // These addresses are only used when creating a new VNet and subnets
 // If you provide existingVnetResourceId, these values will be ignored
-// Leave empty to use automatic subnet sizing (/23 for Container Apps, /24 for Private Endpoints)
-param vnetAddressPrefix = ''
-param agentSubnetPrefix = ''
-param peSubnetPrefix = ''
+param vnetAddressPrefix = '172.25.0.0/16'
+// Updated subnet sizing: agent /24, dedicated ACA /23 for scale, PE /24 outside ACA range
+param agentSubnetPrefix = '172.25.0.0/24'
+param peSubnetPrefix = '172.25.1.0/24'
+param acaSubnetPrefix = '172.25.2.0/23'
