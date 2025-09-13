@@ -61,8 +61,8 @@ module newVNet 'vnet.bicep' = if (!useExistingVnet) {
 }
 
 // Configure existing VNet with required subnets
-module existingVNet 'existing-vnet-subnets.bicep' = if (useExistingVnet) {
-  name: 'existing-vnet-subnets-deployment'
+module existingVNet 'vnet-subnets.bicep' = if (useExistingVnet) {
+  name: 'vnet-subnets-deployment'
   params: {
     vnetName: vnetName
     vnetResourceGroupName: existingVnetResourceGroupName
