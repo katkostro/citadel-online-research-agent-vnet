@@ -2,7 +2,6 @@ using './main.bicep'
 
 param location = 'eastus2'
 param environmentName = 'dev'
-param aiServices = 'aiservice'
 param modelName = 'gpt-4o'
 param modelFormat = 'OpenAI'
 param modelVersion = '2024-11-20'
