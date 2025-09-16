@@ -65,9 +65,13 @@ param modelSkuName string = 'GlobalStandard'
 @description('The tokens per minute (TPM) of your model deployment')
 param modelCapacity int = 30
 
-// Create a short, unique suffix, that will be unique to each resource group
-// Use a stable unique suffix that doesn't change between deployments
-var uniqueSuffix = substring(uniqueString(subscription().id, resourceGroup().id, location, environmentName), 0, 4)
+@description('Optional stable 4-char suffix to override automatic unique hash for reproducible naming (e.g. reuse existing resources). Leave blank to auto-generate.')
+@maxLength(4)
+param stableSuffix string = ''
+
+// Create a short, unique suffix, or use provided stable suffix
+var computedSuffix = substring(uniqueString(subscription().id, resourceGroup().id, location, environmentName), 0, 4)
+var uniqueSuffix = empty(stableSuffix) ? computedSuffix : toLower(stableSuffix)
 
 // Service-specific naming for clarity
 var aiAccountName = toLower('aifoundry-${uniqueSuffix}')
@@ -86,17 +90,17 @@ param projectDescription string = 'A project for the AI Foundry account with net
 param displayName string = 'network secured agent project'
 
 // Existing Virtual Network parameters
-@description('Virtual Network name for the Agent to create new or existing virtual network')
-param vnetName string
+@description('Virtual Network name (auto-default for azd if not supplied)')
+param vnetName string = toLower('vnet-${environmentName}')
 
-@description('The name of Agents Subnet to create new or existing subnet for agents')
-param agentSubnetName string
+@description('Agent subnet name (default)')
+param agentSubnetName string = toLower('${environmentName}-agent-snet')
 
-@description('The name of ACA infrastructure Subnet (new)')
-param acaSubnetName string = 'aca-subnet'
+@description('ACA infrastructure subnet name (default)')
+param acaSubnetName string = toLower('${environmentName}-aca-snet')
 
-@description('The name of Private Endpoint subnet to create new or existing subnet for private endpoints')
-param peSubnetName string = 'pe-subnet'
+@description('Private Endpoint subnet name (default)')
+param peSubnetName string = toLower('${environmentName}-pe-snet')
 
 //Existing standard Agent required resources
 @description('Existing Virtual Network name Resource ID')
@@ -105,7 +109,7 @@ param existingVnetResourceId string = ''
 @description('Address space for the VNet (only used for new VNet)')
 param vnetAddressPrefix string = ''
 
-@description('Address prefix for the agent subnet. The default value will be calculated dynamically to avoid conflicts')
+@description('Address prefix for the agent subnet.')
 param agentSubnetPrefix string = ''
 
 @description('Address prefix for the ACA infrastructure subnet')
@@ -128,19 +132,66 @@ param enableBingSearch bool = true
 @allowed(['external', 'internal'])
 param containerAppIngressType string = 'internal'
 
+@description('Make the Container Apps managed environment internal-only (provisions internal load balancer)')
+param containerAppEnvironmentInternal bool = true
+
+@description('Create Private DNS zone for internal Container Apps domain and link primary VNet')
+param createInternalAcaDnsZone bool = false
+
+@description('Optional: Additional VNet resource IDs to link to the internal Container Apps private DNS zone (e.g., APIM VNet)')
+param additionalInternalAcaDnsVnetIds array = []
+
+@description('Mode for internal ACA DNS management: auto (discover defaultDomain & create zone), explicit (use provided internalAcaDnsZoneName), none (skip)')
+@allowed(['auto','explicit','none'])
+param internalAcaDnsMode string = 'auto'
+
+@description('Master toggle to enable internal ACA DNS resources (private zone + links). Leave false until you want DNS immediately with the environment.')
+param internalAcaDnsEnabled bool = false
+
 @description('Create the Container App during infra provisioning (set false for two-phase deploy).')
 param createContainerApp bool = true
+
+@description('Enable private endpoints for Application Insights and Log Analytics (preview/feature dependent).')
+param enableMonitoringPrivateEndpoints bool = true
 
 
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
 //param existingDnsZonesResourceGroup string = ''
 
-@description('Object mapping DNS zone names to their resource group, or empty string to indicate creation')
-param existingDnsZones object
+@description('Object mapping DNS zone names to their resource group, or empty string to indicate creation (storage blob zone auto-added).')
+param existingDnsZones object = {
+  'privatelink.services.ai.azure.com': ''
+  'privatelink.openai.azure.com': ''
+  'privatelink.cognitiveservices.azure.com': ''
+  'privatelink.search.windows.net': ''
+  'privatelink.documents.azure.com': ''
+  'privatelink.monitor.azure.com': ''
+  'privatelink.oms.opinsights.azure.com': ''
+  'privatelink.ods.opinsights.azure.com': ''
+  'privatelink.agentsvc.azure-automation.net': ''
+}
 
-@description('Zone Names for Validation of existing Private Dns Zones')
-param dnsZoneNames array
+var storageBlobPrivateZone = 'privatelink.blob.${environment().suffixes.storage}'
+var enrichedExistingDnsZones = union(existingDnsZones, {
+  '${storageBlobPrivateZone}': ''
+})
+
+@description('Base list of private DNS zone names (storage blob zone auto-added).')
+param dnsZoneNames array = [
+  'privatelink.services.ai.azure.com'
+  'privatelink.openai.azure.com'
+  'privatelink.cognitiveservices.azure.com'
+  'privatelink.search.windows.net'
+  'privatelink.documents.azure.com'
+  'privatelink.monitor.azure.com'
+  'privatelink.oms.opinsights.azure.com'
+  'privatelink.ods.opinsights.azure.com'
+  'privatelink.agentsvc.azure-automation.net'
+]
+
+// Compose full zone list (including blob) for validator module
+var enrichedDnsZoneNames = concat(dnsZoneNames, [storageBlobPrivateZone])
 
 
 var projectName = toLower('${firstProjectName}${uniqueSuffix}')
@@ -200,9 +251,22 @@ module vnet 'modules/networking/vnet-orchestrator.bicep' = {
   }
 }
 
-/*
-  Create the AI Services account and gpt-4o model deployment
-*/
+// Deploy Container Registry early so remote build can occur even if AI account later fails
+module containerRegistry 'modules/aca/container-registry.bicep' = {
+  name: 'acr-${containerRegistryName}-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    containerRegistryName: containerRegistryName
+    peSubnetId: vnet.outputs.peSubnetId
+    vnetName: vnet.outputs.virtualNetworkName
+    vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
+    vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
+    publicNetworkAccess: 'Enabled'
+    tags: azdTags
+  }
+}
+
+/*  Create the AI Services account and gpt-4o model deployment */
 module aiAccount 'modules/ai-services/ai-account.bicep' = {
   name: 'ai-${aiAccountName}-${uniqueSuffix}-deployment'
   params: {
@@ -228,8 +292,8 @@ module validateExistingResources 'modules/utilities/resource-validator.bicep' = 
     aiSearchResourceId: aiSearchResourceId
     azureStorageAccountResourceId: azureStorageAccountResourceId
     azureCosmosDBAccountResourceId: azureCosmosDBAccountResourceId
-    existingDnsZones: existingDnsZones
-    dnsZoneNames: dnsZoneNames
+  existingDnsZones: enrichedExistingDnsZones
+  dnsZoneNames: enrichedDnsZoneNames
   }
 }
 
@@ -297,7 +361,7 @@ module privateEndpointAndDNS 'modules/security/private-endpoints.bicep' = {
       aiSearchResourceGroupName: aiSearchServiceResourceGroupName // Resource Group for AI Search Service
       storageAccountResourceGroupName: azureStorageResourceGroupName // Resource Group for Storage Account
       storageAccountSubscriptionId: azureStorageSubscriptionId // Subscription ID for Storage Account
-      existingDnsZones: existingDnsZones
+  existingDnsZones: enrichedExistingDnsZones
     }
     dependsOn: [
     aiSearch      // Ensure AI Search exists
@@ -468,8 +532,9 @@ module applicationInsights 'modules/monitoring/application-insights.bicep' = {
     suffix: uniqueSuffix
     vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
     vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
-    enablePrivateEndpoints: false  // Temporarily disabled while AllowPrivateEndpoints feature registration is pending
-    existingDnsZones: existingDnsZones
+  // Temporarily force disable private endpoints until feature registered
+  enablePrivateEndpoints: false
+  existingDnsZones: enrichedExistingDnsZones
   }
   dependsOn: [
     privateEndpointAndDNS
@@ -498,9 +563,9 @@ module containerApp 'modules/aca/container-app.bicep' = {
     location: location
     containerAppEnvironmentName: containerAppEnvironmentName
     containerAppName: containerAppName
-    containerRegistryName: containerRegistryName
+  containerRegistryLoginServer: containerRegistry.outputs.containerRegistryLoginServer
+  containerRegistryId: containerRegistry.outputs.containerRegistryId
     acaSubnetId: vnet.outputs.acaSubnetId
-    peSubnetId: vnet.outputs.peSubnetId
     vnetName: vnet.outputs.virtualNetworkName
     vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
     vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
@@ -511,7 +576,13 @@ module containerApp 'modules/aca/container-app.bicep' = {
     enableBingSearch: enableBingSearch
     bingSearchEndpoint: enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
     bingSearchApiKey: '' // This will be set manually after deployment
-    containerAppIngressType: containerAppIngressType
+  containerAppIngressType: containerAppIngressType
+  containerAppEnvironmentInternal: containerAppEnvironmentInternal
+  internalAcaDnsZoneCreate: createInternalAcaDnsZone
+  internalAcaDnsMode: internalAcaDnsMode
+  internalAcaDnsEnabled: internalAcaDnsEnabled
+  additionalInternalAcaDnsVnetIds: additionalInternalAcaDnsVnetIds
+  internalAcaDnsZoneName: internalAcaDnsZoneName
     tags: azdTags
   createContainerApp: createContainerApp
   }
@@ -530,6 +601,13 @@ output SERVICE_API_NAME string = createContainerApp ? containerApp.outputs.conta
 output SERVICE_API_URI string = createContainerApp ? containerApp.outputs.containerAppUri : ''
 output SERVICE_API_ENDPOINTS array = createContainerApp ? [containerApp.outputs.containerAppUri] : []
 output RESOURCE_GROUP_ID string = resourceGroup().id
+// Internal ACA DNS outputs
+output ACA_INTERNAL_DNS_ZONE string = containerApp.outputs.internalAcaDnsZoneName
+output ACA_INTERNAL_DNS_FQDN string = containerApp.outputs.internalAcaFqdn
+
+// Internal ACA DNS zone name (only used in explicit mode). Keep empty for auto mode; fill after discovery if switching to explicit.
+@description('Internal ACA DNS zone name used when internalAcaDnsMode=explicit (format: internal.<defaultDomain>)')
+param internalAcaDnsZoneName string = ''
 
 // AI Services outputs
 output AZURE_OPENAI_API_VERSION string = modelVersion

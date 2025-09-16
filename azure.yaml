@@ -7,15 +7,27 @@ metadata:
 infra:
   provider: bicep
   path: .
+  parameters:
+  createContainerApp: true
+  # Pin deterministic suffix to match already-deployed resources (reuse instead of creating new)
+  stableSuffix: 6jjr
+  # Enable internal Container Apps DNS immediately with environment creation (set true to create zone/links)
+  internalAcaDnsEnabled: true
+  # Choose mode: auto discovers defaultDomain then creates internal.<defaultDomain> zone; explicit uses provided internalAcaDnsZoneName; none skips
+  internalAcaDnsMode: auto
+  # For explicit mode provide: internalAcaDnsZoneName: internal.<defaultDomain-from-first-deploy>
+  # internalAcaDnsZoneName: ""
+  # Additional VNets (resource IDs) to link to the internal ACA DNS zone (e.g., APIM VNet)
+  additionalInternalAcaDnsVnetIds: []
+  # Disable monitoring private endpoints until feature/permissions confirmed
+  enableMonitoringPrivateEndpoints: false
+  # (Optional) Uncomment and populate these with full resource IDs to force reuse explicitly
+  # aiSearchResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Search/searchServices/aisearch-p7x1
+  # azureStorageAccountResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Storage/storageAccounts/storagep7x1
+  # azureCosmosDBAccountResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-p7x1
+  # existingVnetResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Network/virtualNetworks/vnet-citadel5
 
 pipeline:
   provider: github
 
-services:
-  api:
-    project: ./src
-    language: python
-    host: containerapp
-    docker:
-      file: Dockerfile
-  remoteBuild: true
+## Service block removed for infra-first deployment (no local Docker required). Will reintroduce after remote ACR build.

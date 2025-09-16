@@ -1,7 +1,7 @@
 using './main.bicep'
 
 param location = 'eastus2'
-param environmentName = 'citadel4-in-vnet'
+param environmentName = 'citadel6-in-vnet'
 param modelName = 'gpt-4o'
 param modelFormat = 'OpenAI'
 param modelVersion = '2024-11-20'
@@ -10,54 +10,52 @@ param modelCapacity = 30
 param firstProjectName = 'citadelproject'
 param projectDescription = 'A project for the AI Foundry account with network secured deployed Agent'
 param displayName = 'project'
-param peSubnetName = 'citadel4-pe-snet'
+param peSubnetName = 'citadel6-pe-snet'
 
-// Resource IDs for existing resources
-// If you provide these, the deployment will use the existing resources instead of creating new ones
+// Resource IDs for existing resources (blank => create new)
 param existingVnetResourceId = ''
-param vnetName = 'vnet-citadel4'
-param agentSubnetName = 'citadel4-agent-snet'
-param acaSubnetName = 'citadel4-aca-snet'
+param vnetName = 'vnet-citadel6'
+param agentSubnetName = 'citadel6-agent-snet'
+param acaSubnetName = 'citadel6-aca-snet'
 param aiSearchResourceId = ''
 param azureStorageAccountResourceId = ''
 param azureCosmosDBAccountResourceId = ''
-// Pass the DNS zone map here
-// Leave empty to create new DNS zone, add the resource group of existing DNS zone to use it
+
+// DNS zone map (blank values => create zones in this RG)
 param existingDnsZones = {
-  'privatelink.services.ai.azure.com': ''
-  'privatelink.openai.azure.com': ''
-  'privatelink.cognitiveservices.azure.com': ''               
-  'privatelink.search.windows.net': ''           
-  'privatelink.blob.core.windows.net': ''                            
-  'privatelink.documents.azure.com': ''
-  'privatelink.monitor.azure.com': ''
-  'privatelink.oms.opinsights.azure.com': ''
-  'privatelink.ods.opinsights.azure.com': ''
-  'privatelink.agentsvc.azure-automation.net': ''                       
+	'privatelink.services.ai.azure.com': ''
+	'privatelink.openai.azure.com': ''
+	'privatelink.cognitiveservices.azure.com': ''
+	'privatelink.search.windows.net': ''
+	'privatelink.documents.azure.com': ''
+	'privatelink.monitor.azure.com': ''
+	'privatelink.oms.opinsights.azure.com': ''
+	'privatelink.ods.opinsights.azure.com': ''
+	'privatelink.agentsvc.azure-automation.net': ''
 }
 
-//DNSZones names for validating if they exist
+// DNS zone names list
 param dnsZoneNames = [
-  'privatelink.services.ai.azure.com'
-  'privatelink.openai.azure.com'
-  'privatelink.cognitiveservices.azure.com'
-  'privatelink.search.windows.net'
-  'privatelink.blob.core.windows.net'
-  'privatelink.documents.azure.com'
-  'privatelink.monitor.azure.com'
-  'privatelink.oms.opinsights.azure.com'
-  'privatelink.ods.opinsights.azure.com'
-  'privatelink.agentsvc.azure-automation.net'
+	'privatelink.services.ai.azure.com'
+	'privatelink.openai.azure.com'
+	'privatelink.cognitiveservices.azure.com'
+	'privatelink.search.windows.net'
+	'privatelink.documents.azure.com'
+	'privatelink.monitor.azure.com'
+	'privatelink.oms.opinsights.azure.com'
+	'privatelink.ods.opinsights.azure.com'
+	'privatelink.agentsvc.azure-automation.net'
 ]
 
-// Network configuration: only used when existingVnetResourceId is not provided
-// These addresses are only used when creating a new VNet and subnets
-// If you provide existingVnetResourceId, these values will be ignored
-param vnetAddressPrefix = '172.27.0.0/16'
-// Updated subnet sizing: agent /24, dedicated ACA /23 for scale, PE /24 outside ACA range
-param agentSubnetPrefix = '172.27.0.0/24'
-param peSubnetPrefix = '172.27.1.0/24'
-param acaSubnetPrefix = '172.27.2.0/23'
+// Network configuration for new VNet
+param vnetAddressPrefix = '172.29.0.0/16'
+param agentSubnetPrefix = '172.29.0.0/24'
+param peSubnetPrefix = '172.29.1.0/24'
+param acaSubnetPrefix = '172.29.2.0/23'
 
-// Two-phase deployment: skip container app on initial infra pass
+// Two-phase toggle (true => create container app now)
 param createContainerApp = true
+
+// Optional deterministic suffix
+// Optional deterministic suffix (uncomment & change if you need fixed naming)
+// param stableSuffix = 'p7x1'

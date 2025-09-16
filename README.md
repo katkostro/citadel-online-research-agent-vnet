@@ -357,3 +357,101 @@ modules-network-secured/
 - [Private Endpoint Documentation](https://learn.microsoft.com/en-us/azure/private-link/)
 - [RBAC Documentation](https://learn.microsoft.com/en-us/azure/role-based-access-control/)
 - [Network Security Best Practices](https://learn.microsoft.com/en-us/azure/security/fundamentals/network-best-practices)
+
+---
+
+## Container Apps Internal Environment & DNS Automation (New)
+
+This template now provisions an **internal-only Azure Container Apps Environment (ACE)** and supports automated or explicit private DNS management for the environment's internal domain. It integrates cleanly with `azd up` so you can deploy without manually discovering the internal default domain.
+
+### Key Parameters (Added)
+
+| Parameter | Values | Purpose |
+|-----------|--------|---------|
+| `containerAppIngressType` | `internal` (default) / `external` | Restrict app ingress to VNet only or allow public access |
+| `containerAppEnvironmentInternal` | bool (default `true`) | Creates internal managed environment (private load balancer) |
+| `internalAcaDnsMode` | `auto` (default) / `explicit` / `none` | DNS management strategy for internal Container Apps domain |
+| `internalAcaDnsZoneName` | string (empty by default) | Required only when `internalAcaDnsMode=explicit` |
+| `additionalInternalAcaDnsVnetIds` | array | (Optional) Extra VNet IDs to link to the internal zone (e.g. APIM hub VNet) |
+| `createContainerApp` | bool (default `true`) | Two-phase deploy toggle (infra first, then image) |
+
+### DNS Modes
+
+1. **auto (default)**
+  - A deployment script queries the ACE `defaultDomain` at deploy time.
+  - Automatically creates `internal.<defaultDomain>` private DNS zone.
+  - Links the primary VNet and any `additionalInternalAcaDnsVnetIds`.
+  - Faster first experience. Zone name can be retrieved after deployment.
+
+2. **explicit**
+  - You supply `internalAcaDnsZoneName` (e.g. `internal.<defaultDomain>` after discovering it once).
+  - Zone and links are created natively in Bicep (no script). Name appears directly in outputs.
+
+3. **none**
+  - Skips internal zone creation entirely (use only if managing DNS externally).
+
+### Switching auto → explicit
+Typical workflow:
+1. First deploy with `internalAcaDnsMode=auto` (leave `internalAcaDnsZoneName` empty).
+2. Discover zone:
+  ```bash
+  az network private-dns zone list -g <rg> --query "[?starts_with(name,'internal.')].name" -o tsv
+  ```
+3. Re-deploy with `internalAcaDnsMode=explicit` and that value assigned to `internalAcaDnsZoneName` for deterministic outputs and no deployment script run.
+
+### Dynamic Network Naming
+
+If you omit explicit names, the template derives:
+```
+vnetName          = vnet-<environmentName>
+agentSubnetName   = <environmentName>-agent-snet
+acaSubnetName     = <environmentName>-aca-snet
+peSubnetName      = <environmentName>-pe-snet
+```
+This enables a zero‑parameter `azd up` (aside from environment name) for a fresh deployment. The VNet and all three subnets are created unless `existingVnetResourceId` is provided.
+
+### ACR Hardening
+
+The Container Registry is created with:
+* SKU: Premium (required for private endpoints)
+* `publicNetworkAccess: Disabled`
+* `networkRuleSet.defaultAction: Deny` when disabled
+* User Assigned Identity + `AcrPull` role (no admin user)
+
+### Two-Phase Deployment Option
+
+Set `createContainerApp=false` to provision infra first (ACE, ACR, DNS) and then deploy the application image later after a build/push step has produced a digest. Re-run with `createContainerApp=true` (and optionally pass an image digest via environment variable consumed by the module).
+
+### Quick Start with azd
+
+```bash
+azd env new myenv --location eastus2
+azd up
+```
+
+Post-deploy (auto mode):
+```bash
+az resource show -g <rg> -n create-internal-aca-dns --resource-type Microsoft.Resources/deploymentScripts --query properties.statusMessage
+az network private-dns zone list -g <rg> --query "[?starts_with(name,'internal.')].name"
+```
+
+Retrieve ACE default domain (for reference):
+```bash
+az containerapp env show -g <rg> -n <aceName> --query properties.defaultDomain -o tsv
+```
+
+Switch to explicit mode (optional):
+```bash
+az deployment group create -g <rg> -f main.bicep \
+  -p environmentName=myenv internalAcaDnsMode=explicit internalAcaDnsZoneName=<internal.zone.name>
+```
+
+### Troubleshooting Tips
+| Symptom | Likely Cause | Fix |
+|---------|--------------|-----|
+| DNS zone not created (auto) | Deployment script failure | Check script resource statusMessage; verify `Microsoft.App` provider registered |
+| APIM cannot resolve app FQDN | Missing VNet link | Add APIM VNet ID to `additionalInternalAcaDnsVnetIds` and redeploy |
+| Image pull failing | Identity missing `AcrPull` or registry public access disabled before role applied | Confirm role assignment; ensure deployment completed successfully |
+| Cannot move ACE to another subnet | ACE bound to original infrastructure subnet | Recreate ACE targeting new subnet |
+
+---
