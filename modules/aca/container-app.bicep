@@ -8,8 +8,10 @@ param containerAppEnvironmentName string
 @description('Container App name')
 param containerAppName string
 
-@description('Container Registry name')
-param containerRegistryName string
+@description('Container Registry login server (from early registry module)')
+param containerRegistryLoginServer string
+@description('Container Registry resource ID')
+param containerRegistryId string
 
 @description('AI Project endpoint URL')
 param aiProjectEndpoint string
@@ -17,8 +19,11 @@ param aiProjectEndpoint string
 @description('ACA (Container Apps Environment infrastructure) subnet ID (distinct from agent and pe subnets)')
 param acaSubnetId string
 
-@description('Private Endpoint subnet ID')
-param peSubnetId string
+// peSubnetId no longer needed (registry private endpoint handled in separate module)
+// Existing registry reference for role assignment scope
+resource existingContainerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: last(split(containerRegistryId,'/'))
+}
 
 @description('VNet name for private endpoint integration')
 param vnetName string
@@ -52,6 +57,27 @@ param bingSearchApiKey string = ''
 @allowed(['external', 'internal'])
 param containerAppIngressType string = 'internal'
 
+@description('Make the managed environment internal (provisions internal load balancer & private domain)')
+param containerAppEnvironmentInternal bool = false
+
+// Registry now provisioned separately; public network access handled there.
+
+@description('Explicit internal Container Apps private DNS zone name (e.g. internal.<defaultDomain>). Provide after first deploy once defaultDomain known.')
+param internalAcaDnsZoneName string = ''
+
+@description('Create/link the internal ACA DNS zone (requires internalAcaDnsZoneName != empty)')
+param internalAcaDnsZoneCreate bool = false
+
+@description('Additional VNet resource IDs to link (APIM / hub VNets)')
+param additionalInternalAcaDnsVnetIds array = []
+
+@description('Mode for internal ACA DNS management: auto (deployment script discovers defaultDomain), explicit (use provided zone name), none (do nothing)')
+@allowed(['auto','explicit','none'])
+param internalAcaDnsMode string = 'auto'
+
+@description('Master toggle to enable internal ACA DNS provisioning (zone + links + script). Keeps template valid when zone name empty by disabling all DNS resources.')
+param internalAcaDnsEnabled bool = false
+
 @description('Name of the AI agent application')
 param agentName string = 'citadel-research-agent'
 
@@ -76,76 +102,7 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09
   scope: resourceGroup(split(logAnalyticsWorkspaceId, '/')[2], split(logAnalyticsWorkspaceId, '/')[4])
 }
 
-// Container Registry with (temporarily) public network access enabled so build/push works; will rely on private endpoint + DNS later
-resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
-  name: containerRegistryName
-  location: location
-  sku: {
-    name: 'Premium' // Premium required for private endpoints
-  }
-  properties: {
-    adminUserEnabled: false // Enforce managed identity (no admin creds)
-    publicNetworkAccess: 'Enabled'
-    networkRuleSet: {
-      defaultAction: 'Allow'
-    }
-  }
-}
-
-// Private Endpoint for Container Registry
-resource containerRegistryPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = {
-  name: '${containerRegistryName}-private-endpoint'
-  location: location
-  properties: {
-    subnet: {
-      id: peSubnetId  // Put Container Registry private endpoint in pe-subnet
-    }
-    privateLinkServiceConnections: [
-      {
-        name: '${containerRegistryName}-private-connection'
-        properties: {
-          privateLinkServiceId: containerRegistry.id
-          groupIds: ['registry']
-        }
-      }
-    ]
-  }
-}
-
-// Private DNS Zone for Container Registry
-resource containerRegistryPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.azurecr.io'
-  location: 'global'
-}
-
-// Link private DNS zone to VNet
-resource containerRegistryPrivateDnsZoneVnetLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: containerRegistryPrivateDnsZone
-  name: '${vnetName}-link'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: '/subscriptions/${vnetSubscriptionId}/resourceGroups/${vnetResourceGroupName}/providers/Microsoft.Network/virtualNetworks/${vnetName}'
-    }
-  }
-}
-
-// Private DNS Zone Group for Container Registry
-resource containerRegistryPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
-  parent: containerRegistryPrivateEndpoint
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'privatelink-azurecr-io'
-        properties: {
-          privateDnsZoneId: containerRegistryPrivateDnsZone.id
-        }
-      }
-    ]
-  }
-}
+// Registry resources removed (handled in separate module)
 
 // Container App Environment with VNet integration and Log Analytics
 resource containerAppEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -161,9 +118,112 @@ resource containerAppEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' 
     }
     vnetConfiguration: {
       infrastructureSubnetId: acaSubnetId
+      internal: containerAppEnvironmentInternal
     }
     zoneRedundant: false
   }
+}
+
+// Internal DNS zone creation only if explicitly requested and name supplied
+// Backward compatibility: if internalAcaDnsMode not set by caller, internalAcaDnsZoneCreate drives behavior
+// DNS logic must only engage when explicitly enabled AND the managed environment will be provisioned
+var effectiveMode = internalAcaDnsMode != '' ? internalAcaDnsMode : (internalAcaDnsZoneCreate ? (empty(internalAcaDnsZoneName) ? 'auto' : 'explicit') : 'none')
+var dnsFeatureEnabled = internalAcaDnsEnabled && createContainerApp && containerAppEnvironmentInternal
+var useAuto = dnsFeatureEnabled && effectiveMode == 'auto'
+var useExplicit = dnsFeatureEnabled && effectiveMode == 'explicit' && !empty(internalAcaDnsZoneName)
+
+// Provide a safe placeholder to satisfy ARM template name validation when zone name is empty & feature disabled
+var internalAcaDnsZoneNameEffective = !empty(internalAcaDnsZoneName) ? internalAcaDnsZoneName : 'skip-${substring(uniqueString(resourceGroup().id),0,6)}'
+
+// Explicit zone creation
+resource internalAcaDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = if (useExplicit && !empty(internalAcaDnsZoneName)) {
+  name: internalAcaDnsZoneNameEffective
+  location: 'global'
+}
+
+resource internalAcaDnsZoneVnetLinkPrimary 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (useExplicit && !empty(internalAcaDnsZoneName)) {
+  parent: internalAcaDnsZone
+  name: '${vnetName}-primary'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: '/subscriptions/${vnetSubscriptionId}/resourceGroups/${vnetResourceGroupName}/providers/Microsoft.Network/virtualNetworks/${vnetName}'
+    }
+  }
+}
+
+resource internalAcaDnsZoneVnetLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = [for (vnetId, i) in additionalInternalAcaDnsVnetIds: if (useExplicit && !empty(internalAcaDnsZoneName)) {
+  parent: internalAcaDnsZone
+  name: 'extra-${i}'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnetId
+    }
+  }
+}]
+
+// Automated creation via deployment script (auto mode)
+resource internalAcaDnsDeploymentScript 'Microsoft.Resources/deploymentScripts@2023-08-01' = if (useAuto) {
+  name: 'create-internal-aca-dns'
+  location: location
+  kind: 'AzureCLI'
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    azCliVersion: '2.62.0'
+    timeout: 'PT10M'
+    retentionInterval: 'P1D'
+    scriptContent: '''
+set -euo pipefail
+echo "Retrieving default domain..."
+DEFAULT_DOMAIN=$(az resource show --ids ${CONTAINERAPPS_ENV_ID} --query properties.defaultDomain -o tsv)
+ZONE_NAME="internal.${DEFAULT_DOMAIN}"
+echo "Internal zone: $ZONE_NAME"
+echo "Creating zone if not exists..."
+az network private-dns zone create -g ${RESOURCE_GROUP} -n $ZONE_NAME --if-none-match >/dev/null
+
+echo "Linking primary VNet..."
+az network private-dns link vnet create -g ${RESOURCE_GROUP} -n primary-${RANDOM} -z $ZONE_NAME -v ${PRIMARY_VNET_ID} -e false --registration-enabled false >/dev/null || true
+
+if [ -n "${ADDITIONAL_VNET_IDS}" ]; then
+  echo "Processing additional VNets..."
+  # ADDITIONAL_VNET_IDS is a comma-separated list
+  IFS=',' read -ra VNARRAY <<< "${ADDITIONAL_VNET_IDS}"
+  for VID in "${VNARRAY[@]}"; do
+    if [ -n "$VID" ]; then
+      LINK_NAME="extra-$(echo $VID | md5sum | cut -c1-8)"
+      echo "Linking $VID as $LINK_NAME"
+      az network private-dns link vnet create -g ${RESOURCE_GROUP} -n $LINK_NAME -z $ZONE_NAME -v $VID -e false --registration-enabled false >/dev/null || true
+    fi
+  done
+fi
+
+echo '{"zoneName":"'"$ZONE_NAME"'"}' > $AZ_SCRIPTS_OUTPUT_PATH
+'''
+    environmentVariables: [
+      {
+        name: 'CONTAINERAPPS_ENV_ID'
+        value: containerAppEnvironment.id
+      }
+      {
+        name: 'RESOURCE_GROUP'
+        value: resourceGroup().name
+      }
+      {
+        name: 'PRIMARY_VNET_ID'
+        value: '/subscriptions/${vnetSubscriptionId}/resourceGroups/${vnetResourceGroupName}/providers/Microsoft.Network/virtualNetworks/${vnetName}'
+      }
+      {
+        name: 'ADDITIONAL_VNET_IDS'
+        value: length(additionalInternalAcaDnsVnetIds) > 0 ? join(additionalInternalAcaDnsVnetIds, ',') : ''
+      }
+    ]
+  }
+  // implicit dependency via reference to containerAppEnvironment.id in env vars
 }
 
 // User Assigned Managed Identity (breaks circular dependency for ACR pull)
@@ -200,8 +260,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createConta
       }
       registries: [
         {
-          server: containerRegistry.properties.loginServer
-          identity: containerAppUai.id // user-assigned identity resource id
+          server: containerRegistryLoginServer
+          identity: containerAppUai.id
         }
       ]
     }
@@ -211,7 +271,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createConta
           name: containerName
           // Prefer digest if provided (immutability); otherwise fall back to tag.
           // Digest is injected via azd env set API_IMAGE_DIGEST <sha256> in predeploy hook.
-          image: empty(containerImageDigest) ? '${containerRegistry.properties.loginServer}/${containerName}:${containerImageTag}' : '${containerRegistry.properties.loginServer}/${containerName}@sha256:${containerImageDigest}'
+          image: empty(containerImageDigest) ? '${containerRegistryLoginServer}/${containerName}:${containerImageTag}' : '${containerRegistryLoginServer}/${containerName}@sha256:${containerImageDigest}'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -287,8 +347,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createConta
 
 // Role assignment granting ACR pull to the user-assigned identity (no circular dependency)
 resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createContainerApp) {
-  name: guid(containerRegistry.id, containerAppUai.id, 'AcrPull')
-  scope: containerRegistry
+  name: guid(containerRegistryId, containerAppUai.id, 'AcrPull')
+  scope: existingContainerRegistry
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
     principalId: containerAppUai.properties.principalId
@@ -301,8 +361,7 @@ resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-
 // Safe outputs (empty when container app not yet created)
 // Placeholder FQDN pattern; actual FQDN retrieved once resource exists.
 output containerAppName string = createContainerApp ? containerApp.name : containerAppName
-output containerRegistryName string = containerRegistry.name
-output containerRegistryLoginServer string = containerRegistry.properties.loginServer
+output containerRegistryLoginServer string = containerRegistryLoginServer
 output logAnalyticsWorkspaceName string = logAnalyticsWorkspace.name
 
 // Additional outputs needed for main.bicep
@@ -313,3 +372,8 @@ output containerAppIdentityId string = containerAppUai.id
 // NOTE: Accessing containerApp.properties.configuration.ingress.fqdn can yield a null evaluation warning at compile time.
 // We retain the deterministic constructed URI pattern for outputs; callers can query the resource after deployment for the exact FQDN.
 output containerAppUri string = createContainerApp ? 'https://${containerApp.name}.gray.${location}.azurecontainerapps.io' : ''
+// Output only for explicit mode (auto mode value must be queried post-deployment)
+output internalAcaDnsZoneName string = useExplicit ? internalAcaDnsZoneNameEffective : ''
+// Guard against null reference during what-if/compile (resource may not yet exist)
+// In ARM/Bicep we cannot safely dereference ingress.fqdn at compile or early runtime without potential null; emit empty and let callers query post-deployment.
+output internalAcaFqdn string = ''
