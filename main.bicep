@@ -1,6 +1,11 @@
 /*
 Standard Setup Network Secured Steps for main.bicep
 -----------------------------------
+This template is designed for IDEMPOTENT deployments:
+- Resources are updated, not duplicated on repeat deployments
+- Uses stable naming with uniqueString(resourceGroup().id)
+- Azure Resource Manager handles incremental updates
+- AZD maintains deployment state in .azure/ directory
 */
 @description('Location for all resources.')
 @allowed([
@@ -31,8 +36,22 @@ Standard Setup Network Secured Steps for main.bicep
 ])
 param location string = 'eastus2'
 
-@description('Name for your AI Services resource.')
-param aiServices string = 'aiservices'
+@description('Name of the environment which is used to generate a short unique hash used in all resources.')
+param environmentName string
+
+@description('Tags to apply to all resources')
+param tags object = {}
+
+// Add AZD-required tags
+var azdTags = union(tags, {
+  'azd-env-name': environmentName
+  'azd-service-name': 'api'
+})
+
+// Debug output
+output debugTags object = azdTags
+output debugInputTags object = tags
+output debugEnvironmentName string = environmentName
 
 // Model deployment parameters
 @description('The name of the model you want to deploy')
@@ -47,9 +66,15 @@ param modelSkuName string = 'GlobalStandard'
 param modelCapacity int = 30
 
 // Create a short, unique suffix, that will be unique to each resource group
-param deploymentTimestamp string = utcNow('yyyyMMddHHmmss')
-var uniqueSuffix = substring(uniqueString('${resourceGroup().id}-${deploymentTimestamp}'), 0, 4)
-var accountName = toLower('${aiServices}${uniqueSuffix}')
+// Use a stable unique suffix that doesn't change between deployments
+var uniqueSuffix = substring(uniqueString(subscription().id, resourceGroup().id, location, environmentName), 0, 4)
+
+// Service-specific naming for clarity
+var aiAccountName = toLower('aifoundry-${uniqueSuffix}')
+var storageAccountName = toLower('storage${uniqueSuffix}')
+var cosmosAccountName = toLower('cosmos-${uniqueSuffix}')
+var searchAccountName = toLower('aisearch-${uniqueSuffix}')
+var bingSearchName = toLower('bing-${uniqueSuffix}')
 
 @description('Name for your project resource.')
 param firstProjectName string = 'project'
@@ -62,10 +87,13 @@ param displayName string = 'network secured agent project'
 
 // Existing Virtual Network parameters
 @description('Virtual Network name for the Agent to create new or existing virtual network')
-param vnetName string = 'agent-vnet-test'
+param vnetName string
 
 @description('The name of Agents Subnet to create new or existing subnet for agents')
-param agentSubnetName string = 'agent-subnet'
+param agentSubnetName string
+
+@description('The name of ACA infrastructure Subnet (new)')
+param acaSubnetName string = 'aca-subnet'
 
 @description('The name of Private Endpoint subnet to create new or existing subnet for private endpoints')
 param peSubnetName string = 'pe-subnet'
@@ -77,8 +105,11 @@ param existingVnetResourceId string = ''
 @description('Address space for the VNet (only used for new VNet)')
 param vnetAddressPrefix string = ''
 
-@description('Address prefix for the agent subnet. The default value is 192.168.0.0/24 but you can choose any size /26 or any class like 10.0.0.0 or 172.168.0.0')
+@description('Address prefix for the agent subnet. The default value will be calculated dynamically to avoid conflicts')
 param agentSubnetPrefix string = ''
+
+@description('Address prefix for the ACA infrastructure subnet')
+param acaSubnetPrefix string = ''
 
 @description('Address prefix for the private endpoint subnet')
 param peSubnetPrefix string = ''
@@ -89,6 +120,17 @@ param aiSearchResourceId string = ''
 param azureStorageAccountResourceId string = ''
 @description('The Cosmos DB Account full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
 param azureCosmosDBAccountResourceId string = ''
+
+@description('Enable Bing Search for web search capabilities')
+param enableBingSearch bool = true
+
+@description('Container App ingress type: external (internet-accessible) or internal (VNet-only)')
+@allowed(['external', 'internal'])
+param containerAppIngressType string = 'internal'
+
+@description('Create the Container App during infra provisioning (set false for two-phase deploy).')
+param createContainerApp bool = true
+
 
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
@@ -102,9 +144,14 @@ param dnsZoneNames array
 
 
 var projectName = toLower('${firstProjectName}${uniqueSuffix}')
-var cosmosDBName = toLower('${aiServices}${uniqueSuffix}cosmosdb')
-var aiSearchName = toLower('${aiServices}${uniqueSuffix}search')
-var azureStorageName = toLower('${aiServices}${uniqueSuffix}storage')
+// Use the new service-specific names defined above
+var cosmosDBName = cosmosAccountName
+var aiSearchName = searchAccountName
+var azureStorageName = storageAccountName
+// Container-related naming (keep legacy pattern for container services)
+var containerAppName = toLower('aca-${uniqueSuffix}')
+var containerAppEnvironmentName = toLower('cae-${uniqueSuffix}')
+var containerRegistryName = toLower('acr${uniqueSuffix}')
 
 // Check if existing resources have been passed in
 var storagePassedIn = azureStorageAccountResourceId != ''
@@ -135,7 +182,7 @@ var trimVnetName = trim(existingVnetName)
 param projectCapHost string = 'caphostproj'
 
 // Create Virtual Network and Subnets
-module vnet 'modules-network-secured/network-agent-vnet.bicep' = {
+module vnet 'modules/networking/vnet-orchestrator.bicep' = {
   name: 'vnet-${trimVnetName}-${uniqueSuffix}-deployment'
   params: {
     location: location
@@ -143,9 +190,11 @@ module vnet 'modules-network-secured/network-agent-vnet.bicep' = {
     useExistingVnet: existingVnetPassedIn
     existingVnetResourceGroupName: vnetResourceGroupName
     agentSubnetName: agentSubnetName
+    acaSubnetName: acaSubnetName
     peSubnetName: peSubnetName
     vnetAddressPrefix: vnetAddressPrefix
     agentSubnetPrefix: agentSubnetPrefix
+    acaSubnetPrefix: acaSubnetPrefix
     peSubnetPrefix: peSubnetPrefix
     existingVnetSubscriptionId: vnetSubscriptionId
   }
@@ -154,11 +203,11 @@ module vnet 'modules-network-secured/network-agent-vnet.bicep' = {
 /*
   Create the AI Services account and gpt-4o model deployment
 */
-module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
-  name: 'ai-${accountName}-${uniqueSuffix}-deployment'
+module aiAccount 'modules/ai-services/ai-account.bicep' = {
+  name: 'ai-${aiAccountName}-${uniqueSuffix}-deployment'
   params: {
     // workspace organization
-    accountName: accountName
+    accountName: aiAccountName
     location: location
     modelName: modelName
     modelFormat: modelFormat
@@ -173,7 +222,7 @@ module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
   This module will check if the AI Search Service, Storage Account, and Cosmos DB Account already exist.
   If they do, it will set the corresponding output to true. If they do not exist, it will set the output to false.
 */
-module validateExistingResources 'modules-network-secured/validate-existing-resources.bicep' = {
+module validateExistingResources 'modules/utilities/resource-validator.bicep' = {
   name: 'validate-existing-resources-${uniqueSuffix}-deployment'
   params: {
     aiSearchResourceId: aiSearchResourceId
@@ -186,8 +235,8 @@ module validateExistingResources 'modules-network-secured/validate-existing-reso
 
 // This module will create new agent dependent resources
 // A Cosmos DB account, an AI Search Service, and a Storage Account are created if they do not already exist
-module aiDependencies 'modules-network-secured/standard-dependent-resources.bicep' = {
-  name: 'dependencies-${accountName}-${uniqueSuffix}-deployment'
+module aiDependencies 'modules/utilities/standard-dependent-resources.bicep' = {
+  name: 'dependencies-${aiAccountName}-${uniqueSuffix}-deployment'
   params: {
     location: location
     azureStorageName: azureStorageName
@@ -230,7 +279,7 @@ resource cosmosDB 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = 
 // 2. Sets up private DNS zones for each service
 // 3. Links private DNS zones to the VNet for name resolution
 // 4. Configures network policies to restrict access to private endpoints only
-module privateEndpointAndDNS 'modules-network-secured/private-endpoint-and-dns.bicep' = {
+module privateEndpointAndDNS 'modules/security/private-endpoints.bicep' = {
     name: '${uniqueSuffix}-private-endpoint'
     params: {
       aiAccountName: aiAccount.outputs.accountName    // AI Services to secure
@@ -260,7 +309,7 @@ module privateEndpointAndDNS 'modules-network-secured/private-endpoint-and-dns.b
 /*
   Creates a new project (sub-resource of the AI Services account)
 */
-module aiProject 'modules-network-secured/ai-project-identity.bicep' = {
+module aiProject 'modules/ai-services/ai-project.bicep' = {
   name: 'ai-${projectName}-${uniqueSuffix}-deployment'
   params: {
     // workspace organization
@@ -291,7 +340,7 @@ module aiProject 'modules-network-secured/ai-project-identity.bicep' = {
   ]
 }
 
-module formatProjectWorkspaceId 'modules-network-secured/format-project-workspace-id.bicep' = {
+module formatProjectWorkspaceId 'modules/utilities/format-workspace-id.bicep' = {
   name: 'format-project-workspace-id-${uniqueSuffix}-deployment'
   params: {
     projectWorkspaceId: aiProject.outputs.projectWorkspaceId
@@ -301,7 +350,7 @@ module formatProjectWorkspaceId 'modules-network-secured/format-project-workspac
 /*
   Assigns the project SMI the storage blob data contributor role on the storage account
 */
-module storageAccountRoleAssignment 'modules-network-secured/azure-storage-account-role-assignment.bicep' = {
+module storageAccountRoleAssignment 'modules/security/storage-account-roles.bicep' = {
   name: 'storage-${azureStorageName}-${uniqueSuffix}-deployment'
   scope: resourceGroup(azureStorageSubscriptionId, azureStorageResourceGroupName)
   params: {
@@ -315,7 +364,7 @@ module storageAccountRoleAssignment 'modules-network-secured/azure-storage-accou
 }
 
 // The Comos DB Operator role must be assigned before the caphost is created
-module cosmosAccountRoleAssignments 'modules-network-secured/cosmosdb-account-role-assignment.bicep' = {
+module cosmosAccountRoleAssignments 'modules/security/cosmosdb-account-roles.bicep' = {
   name: 'cosmos-account-ra-${projectName}-${uniqueSuffix}-deployment'
   scope: resourceGroup(cosmosDBSubscriptionId, cosmosDBResourceGroupName)
   params: {
@@ -329,7 +378,7 @@ module cosmosAccountRoleAssignments 'modules-network-secured/cosmosdb-account-ro
 }
 
 // This role can be assigned before or after the caphost is created
-module aiSearchRoleAssignments 'modules-network-secured/ai-search-role-assignments.bicep' = {
+module aiSearchRoleAssignments 'modules/ai-services/ai-search-role-assignments.bicep' = {
   name: 'ai-search-ra-${projectName}-${uniqueSuffix}-deployment'
   scope: resourceGroup(aiSearchServiceSubscriptionId, aiSearchServiceResourceGroupName)
   params: {
@@ -342,8 +391,24 @@ module aiSearchRoleAssignments 'modules-network-secured/ai-search-role-assignmen
   ]
 }
 
+// Create the enterprise_memory database in Cosmos DB before capability host
+module cosmosEnterpriseMemoryDatabase 'modules/storage/cosmos-database.bicep' = {
+  name: 'cosmos-db-setup-${uniqueSuffix}-deployment'
+  scope: resourceGroup(cosmosDBSubscriptionId, cosmosDBResourceGroupName)
+  params: {
+    cosmosAccountName: aiDependencies.outputs.cosmosDBName
+    databaseName: 'enterprise_memory'
+    throughput: 400
+    projectId: aiProject.outputs.projectWorkspaceId
+  }
+  dependsOn: [
+    cosmosDB
+    cosmosAccountRoleAssignments
+  ]
+}
+
 // This module creates the capability host for the project and account
-module addProjectCapabilityHost 'modules-network-secured/add-project-capability-host.bicep' = {
+module addProjectCapabilityHost 'modules/utilities/capability-host.bicep' = {
   name: 'capabilityHost-configuration-${uniqueSuffix}-deployment'
   params: {
     accountName: aiAccount.outputs.accountName
@@ -356,7 +421,8 @@ module addProjectCapabilityHost 'modules-network-secured/add-project-capability-
   dependsOn: [
      aiSearch      // Ensure AI Search exists
      storage       // Ensure Storage exists
-     cosmosDB
+     cosmosDB      // Ensure Cosmos DB account exists
+     cosmosEnterpriseMemoryDatabase  // Ensure enterprise_memory database and containers exist
      privateEndpointAndDNS
      cosmosAccountRoleAssignments
      storageAccountRoleAssignment
@@ -365,7 +431,7 @@ module addProjectCapabilityHost 'modules-network-secured/add-project-capability-
 }
 
 // The Storage Blob Data Owner role must be assigned after the caphost is created
-module storageContainersRoleAssignment 'modules-network-secured/blob-storage-container-role-assignments.bicep' = {
+module storageContainersRoleAssignment 'modules/security/blob-container-roles.bicep' = {
   name: 'storage-containers-${uniqueSuffix}-deployment'
   scope: resourceGroup(azureStorageSubscriptionId, azureStorageResourceGroupName)
   params: {
@@ -373,13 +439,11 @@ module storageContainersRoleAssignment 'modules-network-secured/blob-storage-con
     storageName: aiDependencies.outputs.azureStorageName
     workspaceId: formatProjectWorkspaceId.outputs.projectWorkspaceIdGuid
   }
-  dependsOn: [
-    addProjectCapabilityHost
-  ]
+  // Role assignments automatically wait for required resources
 }
 
 // The Cosmos Built-In Data Contributor role must be assigned after the caphost is created
-module cosmosContainerRoleAssignments 'modules-network-secured/cosmos-container-role-assignments.bicep' = {
+module cosmosContainerRoleAssignments 'modules/security/cosmos-container-roles.bicep' = {
   name: 'cosmos-ra-${uniqueSuffix}-deployment'
   scope: resourceGroup(cosmosDBSubscriptionId, cosmosDBResourceGroupName)
   params: {
@@ -388,8 +452,123 @@ module cosmosContainerRoleAssignments 'modules-network-secured/cosmos-container-
     projectPrincipalId: aiProject.outputs.projectPrincipalId
 
   }
-dependsOn: [
-  addProjectCapabilityHost
-  storageContainersRoleAssignment
+  dependsOn: [
+    cosmosEnterpriseMemoryDatabase  // Ensure containers are created before role assignments
+    storageContainersRoleAssignment
+  ]
+}// Application Insights and Log Analytics for monitoring
+module applicationInsights 'modules/monitoring/application-insights.bicep' = {
+  name: 'monitoring-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    applicationInsightsName: 'appinsights-${uniqueSuffix}'
+    logAnalyticsWorkspaceName: 'loganalytics-${uniqueSuffix}'
+    vnetName: vnet.outputs.virtualNetworkName
+    privateEndpointSubnetName: vnet.outputs.peSubnetName
+    suffix: uniqueSuffix
+    vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
+    vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
+    enablePrivateEndpoints: false  // Temporarily disabled while AllowPrivateEndpoints feature registration is pending
+    existingDnsZones: existingDnsZones
+  }
+  dependsOn: [
+    privateEndpointAndDNS
   ]
 }
+
+// Bing Search for web search capabilities
+module bingSearch 'modules/ai-services/bing-search.bicep' = if (enableBingSearch) {
+  name: 'bing-search-${uniqueSuffix}-deployment'
+  params: {
+    bingSearchName: bingSearchName
+    vnetName: vnet.outputs.virtualNetworkName
+    subnetName: vnet.outputs.peSubnetName
+    dnsZoneResourceGroupName: resourceGroup().name
+    createDnsZones: true
+  }
+  dependsOn: [
+    privateEndpointAndDNS
+  ]
+}
+
+// Container App Environment and Registry (but not the Container App itself - AZD manages that)
+module containerApp 'modules/aca/container-app.bicep' = {
+  name: 'container-app-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    containerAppEnvironmentName: containerAppEnvironmentName
+    containerAppName: containerAppName
+    containerRegistryName: containerRegistryName
+    acaSubnetId: vnet.outputs.acaSubnetId
+    peSubnetId: vnet.outputs.peSubnetId
+    vnetName: vnet.outputs.virtualNetworkName
+    vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
+    vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
+    logAnalyticsWorkspaceId: applicationInsights.outputs.logAnalyticsWorkspaceId
+    aiProjectEndpoint: aiProject.outputs.projectWorkspaceId
+    applicationInsightsConnectionString: applicationInsights.outputs.applicationInsightsConnectionString
+    applicationInsightsInstrumentationKey: applicationInsights.outputs.applicationInsightsInstrumentationKey
+    enableBingSearch: enableBingSearch
+    bingSearchEndpoint: enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
+    bingSearchApiKey: '' // This will be set manually after deployment
+    containerAppIngressType: containerAppIngressType
+    tags: azdTags
+  createContainerApp: createContainerApp
+  }
+}
+
+// Outputs
+output AZURE_LOCATION string = location
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerApp.outputs.containerRegistryLoginServer
+output AZURE_CONTAINER_REGISTRY_NAME string = containerRegistryName
+output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = containerApp.outputs.containerAppEnvironmentId
+output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = containerAppEnvironmentName
+output SERVICE_API_IDENTITY_PRINCIPAL_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityPrincipalId : ''
+output SERVICE_API_IDENTITY_CLIENT_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityClientId : ''
+output SERVICE_API_IDENTITY_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityId : ''
+output SERVICE_API_NAME string = createContainerApp ? containerApp.outputs.containerAppName : ''
+output SERVICE_API_URI string = createContainerApp ? containerApp.outputs.containerAppUri : ''
+output SERVICE_API_ENDPOINTS array = createContainerApp ? [containerApp.outputs.containerAppUri] : []
+output RESOURCE_GROUP_ID string = resourceGroup().id
+
+// AI Services outputs
+output AZURE_OPENAI_API_VERSION string = modelVersion
+output AZURE_OPENAI_ENDPOINT string = aiAccount.outputs.accountTarget
+output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = modelName
+
+// Bing Search outputs
+output AZURE_BING_SEARCH_ENDPOINT string = enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
+output AZURE_BING_SEARCH_API_KEY string = '' // This will be set manually after deployment
+
+// AI Project outputs  
+output AZURE_AI_PROJECT_NAME string = projectName
+output AZURE_AI_PROJECT_ENDPOINT string = aiProject.outputs.projectWorkspaceId
+output AZURE_AI_PROJECT_CONNECTION_STRING string = formatProjectWorkspaceId.outputs.projectWorkspaceIdGuid
+
+// Search outputs
+output AZURE_SEARCH_ENDPOINT string = 'https://${aiDependencies.outputs.aiSearchName}.search.windows.net'
+output AZURE_SEARCH_KEY string = '' // This will be set manually after deployment
+
+// Cosmos DB outputs
+output AZURE_COSMOS_ENDPOINT string = 'https://${aiDependencies.outputs.cosmosDBName}.documents.azure.com:443/'
+output AZURE_COSMOS_DATABASE_NAME string = cosmosEnterpriseMemoryDatabase.outputs.databaseName
+output AZURE_COSMOS_CONTAINER_NAME string = 'memory'
+
+// Storage outputs
+output AZURE_STORAGE_ACCOUNT_NAME string = storageAccountName
+output AZURE_STORAGE_ACCOUNT_ENDPOINT string = 'https://${aiDependencies.outputs.azureStorageName}.blob.${environment().suffixes.storage}'
+output AZURE_STORAGE_CONTAINER_NAME string = 'content'
+
+// Application Insights and monitoring outputs
+output APPLICATION_INSIGHTS_CONNECTION_STRING string = applicationInsights.outputs.applicationInsightsConnectionString
+output APPLICATION_INSIGHTS_INSTRUMENTATION_KEY string = applicationInsights.outputs.applicationInsightsInstrumentationKey
+output LOG_ANALYTICS_WORKSPACE_ID string = applicationInsights.outputs.logAnalyticsWorkspaceId
+
+// Environment variables for Azure Monitor tracing
+output ENABLE_AZURE_MONITOR_TRACING bool = true
+output AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED bool = true
+
+// Bing Search outputs (conditional)
+output BING_SEARCH_ENABLED bool = enableBingSearch
+output BING_SEARCH_RESOURCE_NAME string = enableBingSearch ? bingSearchName : ''
+output BING_SEARCH_ENDPOINT string = enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
