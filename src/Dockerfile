@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 # Copy source code
 COPY . .
 
-EXPOSE 50505
+EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "50505"]
+# Use PORT env if provided (fallback 8000)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

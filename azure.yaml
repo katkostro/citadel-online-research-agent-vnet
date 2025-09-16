@@ -21,11 +21,10 @@ infra:
   additionalInternalAcaDnsVnetIds: []
   # Disable monitoring private endpoints until feature/permissions confirmed
   enableMonitoringPrivateEndpoints: false
-  # (Optional) Uncomment and populate these with full resource IDs to force reuse explicitly
-  # aiSearchResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Search/searchServices/aisearch-p7x1
-  # azureStorageAccountResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Storage/storageAccounts/storagep7x1
-  # azureCosmosDBAccountResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-p7x1
-  # existingVnetResourceId: /subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Network/virtualNetworks/vnet-citadel5
+  # APIM Integration (optional): set apimVnetResourceId to peer APIM VNet with primary VNet and (optionally) link DNS
+  # apimVnetResourceId: /subscriptions/<subId>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<apimVnetName>
+  createApimVnetPeering: true
+  createApimReversePeering: false
 
 pipeline:
   provider: github

@@ -23,6 +23,9 @@ languages:
 ## Overview
 This infrastructure-as-code (IaC) solution deploys a network-secured Azure AI agent environment with private networking and role-based access control (RBAC).
 
+> Developer Workflow: See [DEVELOPMENT.md](./DEVELOPMENT.md) for how to add endpoints and redeploy the container app.
+> Comprehensive Use Case & Greenfield Guide: See [USE_CASE_PRIVATE_INTERNAL_RESEARCH_AGENT.md](./USE_CASE_PRIVATE_INTERNAL_RESEARCH_AGENT.md)
+
 Standard setup supports private network isolation through utilizing **Bring Your Own Virtual Network (BYO VNet)** approach, also known as **custom VNet support with subnet delegation.** 
 
 This implementation gives you full control over the inbound and outbound communication paths for your agent. You can restrict access to only the resources explicitly required by your agent, such as storage accounts, databases, or APIs, while blocking all other traffic by default. This approach ensures that your agent operates within a tightly scoped network boundary, reducing the risk of data leakage or unauthorized access. By default, this setup simplifies security configuration while enforcing strong isolation guarantees, ensuring that each agent deployment remains secure, compliant, and aligned with enterprise networking policies. 
