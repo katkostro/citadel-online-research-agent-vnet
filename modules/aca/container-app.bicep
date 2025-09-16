@@ -249,7 +249,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createConta
       activeRevisionsMode: 'Single'
       ingress: {
         external: containerAppIngressType == 'external'
-        targetPort: 50505
+  // Updated to match application uvicorn listen port (was 50505 causing 404)
+  targetPort: 8000
         allowInsecure: false
         traffic: [
           {
@@ -286,8 +287,9 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createConta
               value: agentName
             }
             {
+              // Align container PORT with ingress targetPort
               name: 'PORT'
-              value: '50505'
+              value: '8000'
             }
             {
               name: 'AZURE_CLIENT_ID'

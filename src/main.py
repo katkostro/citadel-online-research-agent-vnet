@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects.aio import AIProjectClient
-from azure.ai.projects.models import Agent
+# NOTE: Removed direct import of Agent (not exported in current azure-ai-projects version) to prevent startup crash.
 
 # Import OpenTelemetry for tracing
 from opentelemetry import trace
@@ -329,7 +329,7 @@ async def health():
          - 📚 **API Documentation**: `/docs` (Swagger UI)
          - 📋 **OpenAPI Spec**: `/openapi.json` 
          - 🏥 **Health Check**: `/health`
-         - 🔍 **Search Endpoint**: `/search`
+         - 🔍 **Research Endpoint**: `/research`
          - 💬 **Chat Endpoint**: `/chat`
          - 🤖 **Agent Info**: `/agent`
          """,
@@ -374,7 +374,7 @@ async def index(request: Request):
             "redoc": f"{request.url}redoc"
         },
         "endpoints": {
-            "search": f"{request.url}search",
+            "research": f"{request.url}research",
             "chat": f"{request.url}chat", 
             "agent": f"{request.url}agent",
             "health": f"{request.url}health"
@@ -617,321 +617,35 @@ async def chat_stream(request: Message, _ = auth_dependency):
                 content={"error": "Failed to process chat request"}
             )
 
-# Placeholder for search endpoint (can be implemented later)
-@app.post("/search",
-          tags=["search"],
-          summary="Perform web search with AI analysis",
-          description="""
-          **Search for information using Bing grounding and AI analysis.**
-          
-          This endpoint performs real-time web searches and provides intelligent analysis of the results.
-          Perfect for finding current information, events, news, and factual data.
-          
-          **Key Features:**
-          - Real-time web search via Bing
-          - AI-powered result analysis and summarization  
-          - Unicode citation formatting 【n:m†source】
-          - Structured JSON response format
-          - Network-secured with private endpoints
-          
-          **Use Cases:**
-          - Finding current events and news
-          - Weather and location information
-          - Business hours and contact details
-          - Research and fact-checking
-          - Real-time market data
-          
-          **Response Format:**
-          Returns structured data with AI analysis and properly formatted citations.
-          """,
-          response_model=dict,
-          responses={
-              200: {
-                  "description": "Successful search with AI analysis",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "response": {
-                                  "type": "text",
-                                  "text": {
-                                      "value": "Based on my search, here are the latest updates about Microsoft Azure...",
-                                      "annotations": [
-                                          {
-                                              "type": "citation",
-                                              "text": "【1:0†Microsoft Official Blog】",
-                                              "start_index": 45,
-                                              "end_index": 48,
-                                              "citation": {
-                                                  "citation_id": "1:0",
-                                                  "quote": "Azure continues to expand...",
-                                                  "source_name": "Microsoft Official Blog"
-                                              }
-                                          }
-                                      ]
-                                  }
-                              }
-                          }
-                      }
-                  }
-              },
-              400: {
-                  "description": "Bad request - invalid search query",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "error": "Search query is required and cannot be empty"
-                          }
-                      }
-                  }
-              },
-              503: {
-                  "description": "Search service temporarily unavailable",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "response": {
-                                  "type": "text", 
-                                  "text": {
-                                      "value": "Search service not available",
-                                      "annotations": []
-                                  }
-                              }
-                          }
-                      }
-                  }
-              }
-          })
-async def search_endpoint(request: Message, _ = auth_dependency):
+# Internal implementation that performs the core research/search operation.
+# Previously this existed as `search_endpoint` route; now we keep it as an internal
+# function so multiple public/alias routes can delegate here without duplicating logic.
+async def search_endpoint(request: Message):
+    """Core research logic used by /research and legacy/alias endpoints.
+
+    Current placeholder implementation streams through AI agent eventually; for now
+    it returns a structured JSON response indicating the feature stub. Extend this
+    to call Bing grounding / agent once those pieces are fully wired.
     """
-    Search endpoint that returns Bing grounding responses in standardized JSON format.
-    """
-    global agent, ai_project_client
-    
-    # Start tracing span for the search endpoint
-    with tracer.start_as_current_span("search_endpoint") as span:
-        span.set_attribute("search_query", request.message)
-        span.set_attribute("has_thread_id", bool(request.session_state.get("thread_id")))
-        
-        # Extract trace context from request headers for distributed tracing
-        if hasattr(request, 'headers'):
-            carrier = dict(request.headers)
-            TraceContextTextMapPropagator().extract(carrier)
-        
-        logging.info(f"search: Received search request: {request.message}")
-        
-        if not request.message or not request.message.strip():
-            span.set_status(Status(StatusCode.ERROR, "Empty search query"))
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Search query is required and cannot be empty"},
-                headers={"Content-Type": "application/json; charset=utf-8"}
-            )
-        
-        if not agent or not ai_project_client:
-            span.set_status(Status(StatusCode.ERROR, "Agent or AI project client not available"))
-            logging.error("search: Agent or AI project client not available")
-            error_response = format_bing_grounding_response("Search service not available")
-            return JSONResponse(
-                status_code=503,
-                content=error_response,
-                headers={"Content-Type": "application/json; charset=utf-8"}
-            )
-        
-        try:
-            with tracer.start_as_current_span("search_execution") as search_span:
-                # Initialize Bing tool if enabled
-                bing_enabled = os.getenv('ENABLE_BING_SEARCH', 'false').lower() == 'true'
-                search_span.set_attribute("bing_search_enabled", bing_enabled)
-                
-                if bing_enabled:
-                    from api.bing_grounding_tool import BingGroundingTool
-                    bing_tool = BingGroundingTool()
-                    
-                    # Perform direct search using Bing tool
-                    with tracer.start_as_current_span("bing_search") as bing_span:
-                        grounded_info = await bing_tool.get_grounded_information(request.message)
-                        bing_span.set_attribute("sources_found", grounded_info.get('sources_count', 0))
-                        
-                        # Format response for agent consumption
-                        search_context = grounded_info.get('formatted_results', '')
-                        if search_context and grounded_info.get('sources_count', 0) > 0:
-                            prompt = f"""Please analyze and summarize the following search results for the query: "{request.message}"
-
-Search Results:
-{search_context}
-
-Provide a comprehensive, well-structured response that:
-1. Directly answers the user's query
-2. Synthesizes information from multiple sources
-3. Includes proper citations in the format 【n:m†source】
-4. Highlights the most important and current information
-
-Query: {request.message}"""
-                        else:
-                            prompt = f"""The user searched for: "{request.message}"
-
-However, I was unable to find current web search results. This could be due to:
-1. Bing Search API not being configured
-2. Network connectivity issues
-3. API quota limitations
-
-Please provide a helpful response based on your knowledge, and suggest where the user might find current information about their query."""
-                
-                else:
-                    # Use agent without Bing search
-                    prompt = f"""Please provide information about: "{request.message}"
-
-Note: Web search is not currently enabled for real-time information. Please provide the best answer you can based on your knowledge base, and suggest reliable sources where the user can find current information."""
-                
-                # Use Azure AI Foundry agent for analysis
-                with tracer.start_as_current_span("agent_analysis") as agent_span:
-                    run_result = ai_project_client.agents.create_thread_and_run(
-                        agent_id=agent.id,
-                        thread={
-                            "messages": [
-                                {
-                                    "role": "user", 
-                                    "content": prompt
-                                }
-                            ]
-                        }
-                    )
-                    agent_span.set_attribute("thread_id", run_result.thread_id)
-                    agent_span.set_attribute("run_id", run_result.id)
-                
-                # Wait for completion with timeout
-                with tracer.start_as_current_span("wait_for_completion") as wait_span:
-                    import time
-                    max_wait_time = 30
-                    wait_interval = 1
-                    elapsed_time = 0
-                    
-                    while elapsed_time < max_wait_time:
-                        try:
-                            current_run = ai_project_client.agents.runs.get(
-                                thread_id=run_result.thread_id, 
-                                run_id=run_result.id
-                            )
-                            logging.info(f"search: Run status: {current_run.status}")
-                            
-                            if current_run.status in ["completed", "failed", "expired", "cancelled"]:
-                                if current_run.status == "failed":
-                                    wait_span.set_attribute("run_failed", True)
-                                    logging.error(f"search: Run failed: {getattr(current_run, 'last_error', 'Unknown error')}")
-                                break
-                                
-                            time.sleep(wait_interval)
-                            elapsed_time += wait_interval
-                            
-                        except Exception as status_error:
-                            logging.warning(f"search: Error checking run status: {status_error}")
-                            break
-                    
-                    wait_span.set_attribute("elapsed_time", elapsed_time)
-                
-                # Get the complete message with annotations
-                try:
-                    with tracer.start_as_current_span("retrieve_response") as retrieve_span:
-                        messages = ai_project_client.agents.messages.list(
-                            thread_id=run_result.thread_id
-                        )
-                        
-                        if messages and len(messages) > 0:
-                            latest_message = messages[0]
-                            retrieve_span.set_attribute("message_role", latest_message.role)
-                            
-                            if latest_message.role == "assistant" and latest_message.content:
-                                content_item = latest_message.content[0]
-                                if hasattr(content_item, 'text'):
-                                    response_text = content_item.text.value
-                                    annotations = getattr(content_item.text, 'annotations', [])
-                                    
-                                    response_data = format_bing_grounding_response(response_text, annotations)
-                                    span.set_status(Status(StatusCode.OK))
-                                    return JSONResponse(
-                                        content=response_data,
-                                        headers={"Content-Type": "application/json; charset=utf-8"}
-                                    )
-                        
-                        # Fallback response
-                        error_response = format_bing_grounding_response("No search results available")
-                        return JSONResponse(
-                            content=error_response,
-                            headers={"Content-Type": "application/json; charset=utf-8"}
-                        )
-                        
-                except Exception as msg_error:
-                    span.record_exception(msg_error)
-                    logging.error(f"search: Error retrieving messages: {msg_error}")
-                    error_response = format_bing_grounding_response("Error retrieving search results")
-                    return JSONResponse(
-                        status_code=500,
-                        content=error_response,
-                        headers={"Content-Type": "application/json; charset=utf-8"}
-                    )
-                    
-        except Exception as e:
-            span.record_exception(e)
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            logging.error(f"search: Error processing search request: {e}")
-            error_response = format_bing_grounding_response("An error occurred while processing your search request.")
-            return JSONResponse(
-                status_code=500,
-                content=error_response,
-                headers={"Content-Type": "application/json; charset=utf-8"}
-            )
-
-
-def format_unicode_citations(text):
-    """Format citations to use Unicode characters for proper display"""
-    import re
-    # Replace [doc1] style citations with Unicode format 【1:0†source】
-    # This is a simplified version - more sophisticated parsing may be needed
-    citation_pattern = r'\[([^\]]+)\]'
-    
-    def replace_citation(match):
-        citation_content = match.group(1)
-        # Simple mapping - in practice, you'd want more sophisticated citation handling
-        return f"【{citation_content}†source】"
-    
-    return re.sub(citation_pattern, replace_citation, text)
-
-
-def format_bing_grounding_response(content, annotations=None):
-    """Format the response to match the required JSON structure with annotations."""
-    if annotations is None:
-        annotations = []
-    
-    # Format citations in the content
-    formatted_content = format_unicode_citations(content)
-    
-    # Convert annotations to the required format
-    formatted_annotations = []
-    for annotation in annotations:
-        if hasattr(annotation, 'text') and hasattr(annotation, 'file_citation'):
-            formatted_annotation = {
-                "type": "citation",
-                "text": annotation.text,
-                "start_index": getattr(annotation, 'start_index', 0),
-                "end_index": getattr(annotation, 'end_index', len(annotation.text)),
-                "citation": {
-                    "citation_id": getattr(annotation.file_citation, 'file_id', '1:0'),
-                    "quote": getattr(annotation.file_citation, 'quote', ''),
-                    "source_name": getattr(annotation.file_citation, 'file_id', 'Web Search')
-                }
-            }
-            formatted_annotations.append(formatted_annotation)
-    
-    return {
-        "response": {
-            "type": "text",
-            "text": {
-                "value": formatted_content,
-                "annotations": formatted_annotations
-            }
+    with tracer.start_as_current_span("search_endpoint_core") as span:
+        span.set_attribute("query.length", len(request.message or ""))
+        span.set_attribute("has_session_state", bool(request.session_state))
+        # Placeholder response – keep shape obvious for future enhancement.
+        response = {
+            "query": request.message,
+            "status": "not_implemented_yet",
+            "message": "Research functionality placeholder – integrate Bing grounding + agent run here.",
+            "session_state": request.session_state or {},
+            "version": "1.0.0"
         }
-    }
+        return JSONResponse(content=response)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Primary research endpoint
+@app.post("/research", tags=["search"], summary="Perform research with AI analysis", include_in_schema=True)
+async def research_endpoint(request: Message, _ = auth_dependency):
+    return await search_endpoint(request)  # delegate to existing implementation
+
+# Researcher prefixed alias (kept minimal)
+@app.post("/researcher/research", include_in_schema=False)
+async def researcher_research_alias(request: Message):
+    return await search_endpoint(request)

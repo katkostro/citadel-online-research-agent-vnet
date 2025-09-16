@@ -154,6 +154,15 @@ param createContainerApp bool = true
 @description('Enable private endpoints for Application Insights and Log Analytics (preview/feature dependent).')
 param enableMonitoringPrivateEndpoints bool = true
 
+@description('Optional: Resource ID of APIM VNet to peer with primary VNet (enables APIM access to internal Container App). Leave empty for none.')
+param apimVnetResourceId string = ''
+
+@description('Create primary->APIM VNet peering (local side).')
+param createApimVnetPeering bool = true
+
+@description('Also create remote (APIM->primary) peering using deployment script (requires permission on remote VNet).')
+param createApimReversePeering bool = false
+
 
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
@@ -585,6 +594,21 @@ module containerApp 'modules/aca/container-app.bicep' = {
   internalAcaDnsZoneName: internalAcaDnsZoneName
     tags: azdTags
   createContainerApp: createContainerApp
+  }
+}
+
+// APIM VNet Peering (optional)
+module apimVnetPeering 'modules/networking/vnet-peering.bicep' = if (!empty(apimVnetResourceId)) {
+  name: 'apim-vnet-peering-${uniqueSuffix}'
+  params: {
+    primaryVnetName: vnet.outputs.virtualNetworkName
+    primaryVnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
+    primaryVnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
+    remoteVnetResourceId: apimVnetResourceId
+    createPrimaryToRemote: createApimVnetPeering
+    createRemoteToPrimary: createApimReversePeering
+    allowForwardedTraffic: true
+    remoteAllowForwardedTraffic: true
   }
 }
 
