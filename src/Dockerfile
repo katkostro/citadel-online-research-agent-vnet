@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.13.5-slim-bookworm
+ARG PY_VERSION=3.13-slim
+FROM python:${PY_VERSION}
 
 WORKDIR /code
 
-# Copy requirements from parent directory
-COPY ../requirements.txt .
+# Copy requirements from build context root
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Copy source code

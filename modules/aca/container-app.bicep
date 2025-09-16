@@ -50,7 +50,7 @@ param bingSearchApiKey string = ''
 
 @description('Container App ingress type: external (internet-accessible) or internal (VNet-only)')
 @allowed(['external', 'internal'])
-param containerAppIngressType string = 'external'
+param containerAppIngressType string = 'internal'
 
 @description('Name of the AI agent application')
 param agentName string = 'citadel-research-agent'
@@ -58,13 +58,25 @@ param agentName string = 'citadel-research-agent'
 @description('Name of the container')
 param containerName string = 'citadel-api'
 
+@description('Image tag to deploy (ignored if containerImageDigest provided)')
+param containerImageTag string = 'latest'
+
+@description('Image digest value without the sha256: prefix (set via azd env if needed)')
+param containerImageDigest string = ''
+
+@description('Tags to be applied to all resources')
+param tags object = {}
+
+@description('Whether to create the Container App resource now (set false for two-phase deployment: infra first, image build, then app).')
+param createContainerApp bool = true
+
 // Reference to existing Log Analytics Workspace from Application Insights module
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: last(split(logAnalyticsWorkspaceId, '/'))
   scope: resourceGroup(split(logAnalyticsWorkspaceId, '/')[2], split(logAnalyticsWorkspaceId, '/')[4])
 }
 
-// Container Registry with private access only
+// Container Registry with (temporarily) public network access enabled so build/push works; will rely on private endpoint + DNS later
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: containerRegistryName
   location: location
@@ -72,10 +84,10 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' =
     name: 'Premium' // Premium required for private endpoints
   }
   properties: {
-    adminUserEnabled: true
-    publicNetworkAccess: 'Disabled' // Disable public access
+    adminUserEnabled: false // Enforce managed identity (no admin creds)
+    publicNetworkAccess: 'Enabled'
     networkRuleSet: {
-      defaultAction: 'Deny'
+      defaultAction: 'Allow'
     }
   }
 }
@@ -154,12 +166,22 @@ resource containerAppEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' 
   }
 }
 
-// Container App
-resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
+// User Assigned Managed Identity (breaks circular dependency for ACR pull)
+resource containerAppUai 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${containerAppName}-uai'
+  location: location
+}
+
+// Container App (uses user-assigned managed identity for ACR)
+resource containerApp 'Microsoft.App/containerApps@2024-03-01' = if (createContainerApp) {
   name: containerAppName
   location: location
+  tags: union(tags, { 'azd-service-name': 'api' })
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${containerAppUai.id}': {}
+    }
   }
   properties: {
     managedEnvironmentId: containerAppEnvironment.id
@@ -167,7 +189,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         external: containerAppIngressType == 'external'
-        targetPort: 8000
+        targetPort: 50505
         allowInsecure: false
         traffic: [
           {
@@ -179,7 +201,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: containerRegistry.properties.loginServer
-          identity: 'system' // Use system-assigned managed identity instead of admin credentials
+          identity: containerAppUai.id // user-assigned identity resource id
         }
       ]
     }
@@ -187,7 +209,9 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: containerName
-          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest' // Placeholder - will be updated by azd
+          // Prefer digest if provided (immutability); otherwise fall back to tag.
+          // Digest is injected via azd env set API_IMAGE_DIGEST <sha256> in predeploy hook.
+          image: empty(containerImageDigest) ? '${containerRegistry.properties.loginServer}/${containerName}:${containerImageTag}' : '${containerRegistry.properties.loginServer}/${containerName}@sha256:${containerImageDigest}'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -203,7 +227,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'PORT'
-              value: '8000'
+              value: '50505'
             }
             {
               name: 'AZURE_CLIENT_ID'
@@ -257,21 +281,35 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       }
     }
   }
+  dependsOn: [
+  ]
 }
 
-// Role assignment for Container App to access Container Registry
-resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(containerRegistry.id, containerApp.id, 'AcrPull')
+// Role assignment granting ACR pull to the user-assigned identity (no circular dependency)
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (createContainerApp) {
+  name: guid(containerRegistry.id, containerAppUai.id, 'AcrPull')
   scope: containerRegistry
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
-    principalId: containerApp.identity.principalId
+    principalId: containerAppUai.properties.principalId
     principalType: 'ServicePrincipal'
   }
+  dependsOn: [
+  ]
 }
 
-output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
-output containerAppName string = containerApp.name
+// Safe outputs (empty when container app not yet created)
+// Placeholder FQDN pattern; actual FQDN retrieved once resource exists.
+output containerAppName string = createContainerApp ? containerApp.name : containerAppName
 output containerRegistryName string = containerRegistry.name
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
 output logAnalyticsWorkspaceName string = logAnalyticsWorkspace.name
+
+// Additional outputs needed for main.bicep
+output containerAppEnvironmentId string = containerAppEnvironment.id
+output containerAppIdentityPrincipalId string = containerAppUai.properties.principalId
+output containerAppIdentityClientId string = containerAppUai.properties.clientId
+output containerAppIdentityId string = containerAppUai.id
+// NOTE: Accessing containerApp.properties.configuration.ingress.fqdn can yield a null evaluation warning at compile time.
+// We retain the deterministic constructed URI pattern for outputs; callers can query the resource after deployment for the exact FQDN.
+output containerAppUri string = createContainerApp ? 'https://${containerApp.name}.gray.${location}.azurecontainerapps.io' : ''

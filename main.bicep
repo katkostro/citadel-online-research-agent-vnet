@@ -39,6 +39,20 @@ param location string = 'eastus2'
 @description('Name of the environment which is used to generate a short unique hash used in all resources.')
 param environmentName string
 
+@description('Tags to apply to all resources')
+param tags object = {}
+
+// Add AZD-required tags
+var azdTags = union(tags, {
+  'azd-env-name': environmentName
+  'azd-service-name': 'api'
+})
+
+// Debug output
+output debugTags object = azdTags
+output debugInputTags object = tags
+output debugEnvironmentName string = environmentName
+
 // Model deployment parameters
 @description('The name of the model you want to deploy')
 param modelName string = 'gpt-4o'
@@ -112,7 +126,11 @@ param enableBingSearch bool = true
 
 @description('Container App ingress type: external (internet-accessible) or internal (VNet-only)')
 @allowed(['external', 'internal'])
-param containerAppIngressType string = 'external'
+param containerAppIngressType string = 'internal'
+
+@description('Create the Container App during infra provisioning (set false for two-phase deploy).')
+param createContainerApp bool = true
+
 
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
@@ -473,7 +491,7 @@ module bingSearch 'modules/ai-services/bing-search.bicep' = if (enableBingSearch
   ]
 }
 
-// Container App for hosting the API endpoints
+// Container App Environment and Registry (but not the Container App itself - AZD manages that)
 module containerApp 'modules/aca/container-app.bicep' = {
   name: 'container-app-${uniqueSuffix}-deployment'
   params: {
@@ -481,34 +499,65 @@ module containerApp 'modules/aca/container-app.bicep' = {
     containerAppEnvironmentName: containerAppEnvironmentName
     containerAppName: containerAppName
     containerRegistryName: containerRegistryName
-    aiProjectEndpoint: aiAccount.outputs.accountTarget
-  // Use dedicated ACA subnet for Container Apps environment
-  acaSubnetId: vnet.outputs.acaSubnetId
+    acaSubnetId: vnet.outputs.acaSubnetId
     peSubnetId: vnet.outputs.peSubnetId
     vnetName: vnet.outputs.virtualNetworkName
     vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
     vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
     logAnalyticsWorkspaceId: applicationInsights.outputs.logAnalyticsWorkspaceId
+    aiProjectEndpoint: aiProject.outputs.projectWorkspaceId
     applicationInsightsConnectionString: applicationInsights.outputs.applicationInsightsConnectionString
     applicationInsightsInstrumentationKey: applicationInsights.outputs.applicationInsightsInstrumentationKey
     enableBingSearch: enableBingSearch
     bingSearchEndpoint: enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
     bingSearchApiKey: '' // This will be set manually after deployment
     containerAppIngressType: containerAppIngressType
+    tags: azdTags
+  createContainerApp: createContainerApp
   }
-  dependsOn: [
-    cosmosContainerRoleAssignments
-  ]
 }
 
 // Outputs
 output AZURE_LOCATION string = location
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerApp.outputs.containerRegistryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = containerRegistryName
+output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = containerApp.outputs.containerAppEnvironmentId
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = containerAppEnvironmentName
-output SERVICE_BINDING_ string = containerApp.outputs.containerAppUrl
-output WEB_URI string = containerApp.outputs.containerAppUrl
+output SERVICE_API_IDENTITY_PRINCIPAL_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityPrincipalId : ''
+output SERVICE_API_IDENTITY_CLIENT_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityClientId : ''
+output SERVICE_API_IDENTITY_ID string = createContainerApp ? containerApp.outputs.containerAppIdentityId : ''
+output SERVICE_API_NAME string = createContainerApp ? containerApp.outputs.containerAppName : ''
+output SERVICE_API_URI string = createContainerApp ? containerApp.outputs.containerAppUri : ''
+output SERVICE_API_ENDPOINTS array = createContainerApp ? [containerApp.outputs.containerAppUri] : []
 output RESOURCE_GROUP_ID string = resourceGroup().id
+
+// AI Services outputs
+output AZURE_OPENAI_API_VERSION string = modelVersion
+output AZURE_OPENAI_ENDPOINT string = aiAccount.outputs.accountTarget
+output AZURE_OPENAI_CHAT_DEPLOYMENT_NAME string = modelName
+
+// Bing Search outputs
+output AZURE_BING_SEARCH_ENDPOINT string = enableBingSearch ? 'https://api.bing.microsoft.com/' : ''
+output AZURE_BING_SEARCH_API_KEY string = '' // This will be set manually after deployment
+
+// AI Project outputs  
+output AZURE_AI_PROJECT_NAME string = projectName
+output AZURE_AI_PROJECT_ENDPOINT string = aiProject.outputs.projectWorkspaceId
+output AZURE_AI_PROJECT_CONNECTION_STRING string = formatProjectWorkspaceId.outputs.projectWorkspaceIdGuid
+
+// Search outputs
+output AZURE_SEARCH_ENDPOINT string = 'https://${aiDependencies.outputs.aiSearchName}.search.windows.net'
+output AZURE_SEARCH_KEY string = '' // This will be set manually after deployment
+
+// Cosmos DB outputs
+output AZURE_COSMOS_ENDPOINT string = 'https://${aiDependencies.outputs.cosmosDBName}.documents.azure.com:443/'
+output AZURE_COSMOS_DATABASE_NAME string = cosmosEnterpriseMemoryDatabase.outputs.databaseName
+output AZURE_COSMOS_CONTAINER_NAME string = 'memory'
+
+// Storage outputs
+output AZURE_STORAGE_ACCOUNT_NAME string = storageAccountName
+output AZURE_STORAGE_ACCOUNT_ENDPOINT string = 'https://${aiDependencies.outputs.azureStorageName}.blob.${environment().suffixes.storage}'
+output AZURE_STORAGE_CONTAINER_NAME string = 'content'
 
 // Application Insights and monitoring outputs
 output APPLICATION_INSIGHTS_CONNECTION_STRING string = applicationInsights.outputs.applicationInsightsConnectionString

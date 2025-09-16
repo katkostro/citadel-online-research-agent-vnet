@@ -1,0 +1,33 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+
+# VCS
+.git
+.gitignore
+
+# Tests (exclude if not needed in runtime image)
+tests/
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local data
+*.sqlite3

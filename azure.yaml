@@ -17,5 +17,5 @@ services:
     language: python
     host: containerapp
     docker:
-      context: ./src
-      remoteBuild: true
+      file: Dockerfile
+  remoteBuild: true

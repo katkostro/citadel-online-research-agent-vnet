@@ -1,7 +1,7 @@
 using './main.bicep'
 
 param location = 'eastus2'
-param environmentName = 'dev'
+param environmentName = 'citadel4-in-vnet'
 param modelName = 'gpt-4o'
 param modelFormat = 'OpenAI'
 param modelVersion = '2024-11-20'
@@ -10,14 +10,14 @@ param modelCapacity = 30
 param firstProjectName = 'citadelproject'
 param projectDescription = 'A project for the AI Foundry account with network secured deployed Agent'
 param displayName = 'project'
-param peSubnetName = 'citadel-pe-snet'
+param peSubnetName = 'citadel4-pe-snet'
 
 // Resource IDs for existing resources
 // If you provide these, the deployment will use the existing resources instead of creating new ones
 param existingVnetResourceId = ''
-param vnetName = 'vnet-citadel'
-param agentSubnetName = 'citadel-agent-snet'
-param acaSubnetName = 'citadel-aca-snet'
+param vnetName = 'vnet-citadel4'
+param agentSubnetName = 'citadel4-agent-snet'
+param acaSubnetName = 'citadel4-aca-snet'
 param aiSearchResourceId = ''
 param azureStorageAccountResourceId = ''
 param azureCosmosDBAccountResourceId = ''
@@ -53,8 +53,11 @@ param dnsZoneNames = [
 // Network configuration: only used when existingVnetResourceId is not provided
 // These addresses are only used when creating a new VNet and subnets
 // If you provide existingVnetResourceId, these values will be ignored
-param vnetAddressPrefix = '172.26.0.0/16'
+param vnetAddressPrefix = '172.27.0.0/16'
 // Updated subnet sizing: agent /24, dedicated ACA /23 for scale, PE /24 outside ACA range
-param agentSubnetPrefix = '172.26.0.0/24'
-param peSubnetPrefix = '172.26.1.0/24'
-param acaSubnetPrefix = '172.26.2.0/23'
+param agentSubnetPrefix = '172.27.0.0/24'
+param peSubnetPrefix = '172.27.1.0/24'
+param acaSubnetPrefix = '172.27.2.0/23'
+
+// Two-phase deployment: skip container app on initial infra pass
+param createContainerApp = true
